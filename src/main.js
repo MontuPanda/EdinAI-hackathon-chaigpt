@@ -5,6 +5,7 @@
 
 import { gemini } from './services/gemini.js';
 import { generateCaseFromMaterial } from './services/pmmEngine.js';
+import { generateWatsonDocument } from './services/watsonDocumentGenerator.js';
 
 // Application State
 const state = {
@@ -14,7 +15,11 @@ const state = {
   selectedRange: null,
   selectedText: '',
   attachedFile: null,
-  telemetryLogs: []
+  telemetryLogs: [],
+  // New: Watson document state for paragraph-based workflow
+  watsonDocument: null,
+  currentParagraphIndex: 0,
+  useNewWorkflow: false // Toggle between old and new workflow
 };
 
 // DOM References
@@ -82,6 +87,7 @@ const el = {
   activeFileName: document.getElementById('activeFileName'),
   activeFileSize: document.getElementById('activeFileSize'),
   removeFileBtn: document.getElementById('removeFileBtn'),
+  useNewWorkflowToggle: document.getElementById('useNewWorkflowToggle'),
 
   // Case Grounding Manifest
   openManifestBtn: document.getElementById('openManifestBtn'),
@@ -306,6 +312,151 @@ function renderCase(caseData) {
   // Reset dialogue with Watson's intro
   el.dialogueScroll.innerHTML = '';
   addChatMessage('watson', caseData.watsonDialogue.onLoad);
+}
+
+function renderWatsonDocument(watsonDoc) {
+  state.watsonDocument = watsonDoc;
+  state.currentParagraphIndex = 0;
+  state.currentPhase = 'PHASE_2_PARAGRAPH_REVIEW';
+  state.annotations = [];
+
+  // Update Nav
+  el.currentCaseName.textContent = watsonDoc.title;
+  el.openManifestBtn.style.display = 'none'; // Hidden in new workflow
+  el.openIngestionBtn.textContent = 'Change';
+
+  // Update Watson status
+  const accuracy = Math.round(watsonDoc.overallAccuracy * 100);
+  el.watsonMasteryBar.style.width = `${accuracy}%`;
+  el.watsonMasteryVal.textContent = `${accuracy}%`;
+  el.watsonStatusText.textContent = 'Initial Understanding';
+  el.watsonActiveBelief.textContent = `"${watsonDoc.selfAssessment}"`;
+
+  // Update Canvas Header
+  el.currentPhaseTag.textContent = 'PHASE 2: PARAGRAPH REVIEW';
+  el.canvasDocTitle.textContent = `Watson's Document: ${watsonDoc.title}`;
+
+  // Render current paragraph
+  renderCurrentParagraph();
+
+  // Clear margin notes
+  el.marginNotesColumn.innerHTML = '';
+  el.remediationStudio.style.display = 'none';
+
+  // Render paragraph navigation
+  renderParagraphNavigation();
+
+  // Reset dialogue
+  el.dialogueScroll.innerHTML = '';
+  addChatMessage('watson', `I've read the notes and written my understanding. Here's my first paragraph. I'm still learning this topic, so please correct any errors you find.`);
+}
+
+function renderCurrentParagraph() {
+  const doc = state.watsonDocument;
+  const index = state.currentParagraphIndex;
+  const paragraph = doc.paragraphs[index];
+
+  if (!paragraph) return;
+
+  // Show paragraph with topic header
+  el.manuscriptContent.innerHTML = `
+    <div style="margin-bottom: 24px;">
+      <div style="font-size: 11px; color: var(--accent-gold); font-weight: 700; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">
+        Topic: ${escapeHtml(paragraph.topic || 'General')}
+      </div>
+      <p style="font-size: 14px; line-height: 1.7; color: var(--text-primary);">
+        ${escapeHtml(paragraph.content)}
+      </p>
+      <div style="margin-top: 12px; font-size: 11px; color: var(--text-muted);">
+        Confidence: ${Math.round(paragraph.confidence * 100)}%
+      </div>
+    </div>
+  `;
+}
+
+function renderParagraphNavigation() {
+  const doc = state.watsonDocument;
+  const index = state.currentParagraphIndex;
+  const total = doc.paragraphs.length;
+
+  el.canvasActionGroup.innerHTML = `
+    <div style="display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--text-muted);">
+      <span>Paragraph ${index + 1} of ${total}</span>
+      <div style="flex: 1; height: 4px; background: var(--bg-surface-elevated); border-radius: 2px;">
+        <div style="width: ${((index + 1) / total) * 100}%; height: 100%; background: var(--accent-gold); border-radius: 2px; transition: width 0.3s;"></div>
+      </div>
+    </div>
+    <div style="display: flex; gap: 8px;">
+      <button class="btn btn-secondary" id="prevParagraphBtn" ${index === 0 ? 'disabled' : ''}>
+        ← Previous
+      </button>
+      <button class="btn btn-secondary" id="approveParagraphBtn">
+        ✓ Approve
+      </button>
+      <button class="btn btn-primary" id="nextParagraphBtn" ${index === total - 1 ? 'disabled' : ''}>
+        Next →
+      </button>
+    </div>
+  `;
+
+  // Bind events
+  document.getElementById('prevParagraphBtn').onclick = navigateToPreviousParagraph;
+  document.getElementById('approveParagraphBtn').onclick = approveCurrentParagraph;
+  document.getElementById('nextParagraphBtn').onclick = navigateToNextParagraph;
+}
+
+function navigateToPreviousParagraph() {
+  if (state.currentParagraphIndex > 0) {
+    state.currentParagraphIndex--;
+    renderCurrentParagraph();
+    renderParagraphNavigation();
+  }
+}
+
+function navigateToNextParagraph() {
+  const doc = state.watsonDocument;
+  if (state.currentParagraphIndex < doc.paragraphs.length - 1) {
+    state.currentParagraphIndex++;
+    renderCurrentParagraph();
+    renderParagraphNavigation();
+  }
+}
+
+function approveCurrentParagraph() {
+  const doc = state.watsonDocument;
+  const paragraph = doc.paragraphs[state.currentParagraphIndex];
+
+  paragraph.isCorrected = true;
+  paragraph.isApproved = true;
+
+  showToast(`Paragraph ${state.currentParagraphIndex + 1} approved`, 'success');
+  addChatMessage('watson', 'Thanks for reviewing this paragraph. Should I move to the next one?');
+
+  // Auto navigate to next if available
+  if (state.currentParagraphIndex < doc.paragraphs.length - 1) {
+    setTimeout(() => navigateToNextParagraph(), 1000);
+  } else {
+    // All paragraphs reviewed
+    completeDocumentReview();
+  }
+}
+
+function completeDocumentReview() {
+  state.currentPhase = 'PHASE_3_REVIEW_COMPLETE';
+  el.currentPhaseTag.textContent = 'DOCUMENT REVIEW COMPLETE';
+  el.currentPhaseTag.style.color = '#10b981';
+  el.currentPhaseTag.style.borderColor = '#10b981';
+
+  el.canvasActionGroup.innerHTML = `
+    <button class="btn btn-primary" id="requestMoriartyBtn">
+      🕷️ Request Moriarty's Evaluation
+    </button>
+  `;
+
+  document.getElementById('requestMoriartyBtn').onclick = openMoriartyDossier;
+
+  addChatMessage('watson', 'I\'ve completed my document based on your corrections. Thank you for teaching me!');
+  showToast('Document review complete! Moriarty will evaluate the final document.', 'success');
 }
 
 function renderCanvasActions() {
@@ -797,21 +948,39 @@ async function handleCustomMaterialIngest() {
 
   el.processIngestionBtn.disabled = true;
   el.ingestSpinner.style.display = 'inline-block';
-  showToast(`Extracting canonical axioms and seeding Watson with ${gemini.model}...`, 'info');
 
-  try {
-    const generatedCase = await generateCaseFromMaterial({ title, content, inlineData });
-    renderCase(generatedCase);
-    closeIngestionModal();
-    showToast(`Case grounded: "${generatedCase.title}"!`, 'success');
-    logTelemetry('MATERIAL_INGESTED', `Grounded "${generatedCase.title}" from uploaded notes with seeded Watson misconception.`);
-  } catch (err) {
-    console.error('Ingestion error:', err);
-    showToast(`Failed to process material: ${err.message}`, 'error');
-  } finally {
-    el.processIngestionBtn.disabled = false;
-    el.ingestSpinner.style.display = 'none';
+  // Use new paragraph-based workflow
+  if (state.useNewWorkflow) {
+    showToast(`Generating Watson's document from notes using ${gemini.model}...`, 'info');
+    try {
+      const watsonDoc = await generateWatsonDocument({ title, content, inlineData });
+      state.watsonDocument = watsonDoc;
+      state.currentParagraphIndex = 0;
+      renderWatsonDocument(watsonDoc);
+      closeIngestionModal();
+      showToast(`Watson's document generated: "${watsonDoc.title}"!`, 'success');
+      logTelemetry('WATSON_DOCUMENT_GENERATED', `Generated ${watsonDoc.paragraphs.length} paragraphs from uploaded notes.`);
+    } catch (err) {
+      console.error('Watson document generation error:', err);
+      showToast(`Failed to generate Watson document: ${err.message}`, 'error');
+    }
+  } else {
+    // Use old workflow (presets-based)
+    showToast(`Extracting canonical axioms and seeding Watson with ${gemini.model}...`, 'info');
+    try {
+      const generatedCase = await generateCaseFromMaterial({ title, content, inlineData });
+      renderCase(generatedCase);
+      closeIngestionModal();
+      showToast(`Case grounded: "${generatedCase.title}"!`, 'success');
+      logTelemetry('MATERIAL_INGESTED', `Grounded "${generatedCase.title}" from uploaded notes with seeded Watson misconception.`);
+    } catch (err) {
+      console.error('Ingestion error:', err);
+      showToast(`Failed to process material: ${err.message}`, 'error');
+    }
   }
+
+  el.processIngestionBtn.disabled = false;
+  el.ingestSpinner.style.display = 'none';
 }
 
 /* ==========================================================================
@@ -899,6 +1068,15 @@ function setupEventListeners() {
   el.closeIngestionModalBtn.onclick = closeIngestionModal;
   el.cancelIngestionBtn.onclick = closeIngestionModal;
   el.processIngestionBtn.onclick = handleCustomMaterialIngest;
+
+  // New workflow toggle
+  const workflowToggle = document.getElementById('useNewWorkflowToggle');
+  if (workflowToggle) {
+    workflowToggle.onchange = (e) => {
+      state.useNewWorkflow = e.target.checked;
+      console.log('Workflow mode:', state.useNewWorkflow ? 'paragraph-based (new)' : 'presets-based (old)');
+    };
+  }
 
   // File Dropzone Event Listeners
   el.fileDropzone.onclick = () => el.studyFileInput.click();
