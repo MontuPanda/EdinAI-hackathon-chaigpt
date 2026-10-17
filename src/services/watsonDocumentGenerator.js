@@ -40,7 +40,7 @@ Based on the uploaded study material and your general knowledge, write a documen
 ### OUTPUT SCHEMA:
 Return valid JSON with this exact structure:
 {
-  "caseId": "custom_case_${timestamp}",
+  "caseId": "custom_case_001",
   "title": "Document title based on topic",
   "sourceMaterialSummary": "1-2 sentence summary of what the notes covered",
   "paragraphs": [

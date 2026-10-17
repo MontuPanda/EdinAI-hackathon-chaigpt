@@ -5,7 +5,7 @@
 
 import { gemini } from './services/gemini.js';
 import { generateCaseFromMaterial } from './services/pmmEngine.js';
-import { generateWatsonDocument } from './services/watsonDocumentGenerator.js';
+import { generateWatsonDocument, updateParagraphFromCorrection } from './services/watsonDocumentGenerator.js';
 
 // Application State
 const state = {
@@ -16,10 +16,9 @@ const state = {
   selectedText: '',
   attachedFile: null,
   telemetryLogs: [],
-  // New: Watson document state for paragraph-based workflow
+  // Watson document state for paragraph-based workflow
   watsonDocument: null,
-  currentParagraphIndex: 0,
-  useNewWorkflow: false // Toggle between old and new workflow
+  currentParagraphIndex: 0
 };
 
 // DOM References
@@ -87,7 +86,6 @@ const el = {
   activeFileName: document.getElementById('activeFileName'),
   activeFileSize: document.getElementById('activeFileSize'),
   removeFileBtn: document.getElementById('removeFileBtn'),
-  useNewWorkflowToggle: document.getElementById('useNewWorkflowToggle'),
 
   // Case Grounding Manifest
   openManifestBtn: document.getElementById('openManifestBtn'),
@@ -358,13 +356,13 @@ function renderCurrentParagraph() {
 
   if (!paragraph) return;
 
-  // Show paragraph with topic header
+  // Show paragraph with topic header - make text selectable for Red Pen
   el.manuscriptContent.innerHTML = `
-    <div style="margin-bottom: 24px;">
+    <div id="currentParagraphContainer" style="margin-bottom: 24px;">
       <div style="font-size: 11px; color: var(--accent-gold); font-weight: 700; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">
         Topic: ${escapeHtml(paragraph.topic || 'General')}
       </div>
-      <p style="font-size: 14px; line-height: 1.7; color: var(--text-primary);">
+      <p id="paragraphText" style="font-size: 14px; line-height: 1.7; color: var(--text-primary); user-select: text;">
         ${escapeHtml(paragraph.content)}
       </p>
       <div style="margin-top: 12px; font-size: 11px; color: var(--text-muted);">
@@ -499,43 +497,88 @@ function handleTextSelection() {
   el.redPenToolbar.style.display = 'flex';
 }
 
-function applyStrikethroughMarkup() {
+async function applyStrikethroughMarkup() {
   if (!state.selectedRange || !state.selectedText) return;
 
   const tag = el.toolTagSelect.value || 'CONCEPTUAL_FALLACY';
   const correction = prompt('Provide your correction for this error:', '');
-  
+
   if (!correction) {
     showToast('Annotation cancelled.', 'info');
     return;
   }
 
-  const span = document.createElement('span');
-  span.className = 'red-strike';
-  span.dataset.tag = tag;
-  span.textContent = state.selectedText;
+  // Check if we're in paragraph-based workflow
+  if (state.watsonDocument && state.currentPhase === 'PHASE_2_PARAGRAPH_REVIEW') {
+    const doc = state.watsonDocument;
+    const paragraph = doc.paragraphs[state.currentParagraphIndex];
 
-  // Add click handler to view or edit
-  span.onclick = () => showToast(`Tagged as [${tag}]`, 'success');
+    // Save correction
+    paragraph.corrections.push({
+      selectedText: state.selectedText,
+      tag: tag,
+      userCorrection: correction,
+      timestamp: new Date().toISOString()
+    });
 
-  state.selectedRange.deleteContents();
-  state.selectedRange.insertNode(span);
+    // Update paragraph using LLM
+    showToast('Updating paragraph based on your correction...', 'info');
 
-  // Add margin note
-  addMarginSticky(state.selectedText, tag, correction);
+    try {
+      const updated = await updateParagraphFromCorrection({
+        paragraph: paragraph,
+        selectedText: state.selectedText,
+        tag: tag,
+        userCorrection: correction
+      });
 
-  // Save annotation state
-  state.annotations.push({
-    text: state.selectedText,
-    tag: tag,
-    note: correction
-  });
+      // Update paragraph content
+      paragraph.content = updated.updatedContent;
+      paragraph.confidence = updated.confidence;
+      paragraph.isCorrected = true;
+
+      // Rerender paragraph
+      renderCurrentParagraph();
+
+      // Watson responds
+      addChatMessage('watson', `I've updated my understanding: ${updated.learningApplied}`);
+      showToast('Paragraph updated successfully!', 'success');
+
+      // Auto git push
+      autoGitPush(`Paragraph ${state.currentParagraphIndex + 1} corrected: ${tag}`);
+    } catch (err) {
+      console.error('Paragraph update failed:', err);
+      showToast('Failed to update paragraph. Please try again.', 'error');
+    }
+  } else {
+    // Old workflow: apply strikethrough markup
+    const span = document.createElement('span');
+    span.className = 'red-strike';
+    span.dataset.tag = tag;
+    span.textContent = state.selectedText;
+
+    // Add click handler to view or edit
+    span.onclick = () => showToast(`Tagged as [${tag}]`, 'success');
+
+    state.selectedRange.deleteContents();
+    state.selectedRange.insertNode(span);
+
+    // Add margin note
+    addMarginSticky(state.selectedText, tag, correction);
+
+    // Save annotation state
+    state.annotations.push({
+      text: state.selectedText,
+      tag: tag,
+      note: correction
+    });
+
+    showToast('✒️ Strikethrough applied with Red Ink!', 'success');
+  }
 
   // Hide toolbar & clear selection
   el.redPenToolbar.style.display = 'none';
   window.getSelection().removeAllRanges();
-
-  showToast('✒️ Strikethrough applied with Red Ink!', 'success');
 }
 
 function addMarginSticky(targetText, tag, note) {
@@ -948,35 +991,19 @@ async function handleCustomMaterialIngest() {
 
   el.processIngestionBtn.disabled = true;
   el.ingestSpinner.style.display = 'inline-block';
+  showToast(`Generating Watson's document from notes using ${gemini.model}...`, 'info');
 
-  // Use new paragraph-based workflow
-  if (state.useNewWorkflow) {
-    showToast(`Generating Watson's document from notes using ${gemini.model}...`, 'info');
-    try {
-      const watsonDoc = await generateWatsonDocument({ title, content, inlineData });
-      state.watsonDocument = watsonDoc;
-      state.currentParagraphIndex = 0;
-      renderWatsonDocument(watsonDoc);
-      closeIngestionModal();
-      showToast(`Watson's document generated: "${watsonDoc.title}"!`, 'success');
-      logTelemetry('WATSON_DOCUMENT_GENERATED', `Generated ${watsonDoc.paragraphs.length} paragraphs from uploaded notes.`);
-    } catch (err) {
-      console.error('Watson document generation error:', err);
-      showToast(`Failed to generate Watson document: ${err.message}`, 'error');
-    }
-  } else {
-    // Use old workflow (presets-based)
-    showToast(`Extracting canonical axioms and seeding Watson with ${gemini.model}...`, 'info');
-    try {
-      const generatedCase = await generateCaseFromMaterial({ title, content, inlineData });
-      renderCase(generatedCase);
-      closeIngestionModal();
-      showToast(`Case grounded: "${generatedCase.title}"!`, 'success');
-      logTelemetry('MATERIAL_INGESTED', `Grounded "${generatedCase.title}" from uploaded notes with seeded Watson misconception.`);
-    } catch (err) {
-      console.error('Ingestion error:', err);
-      showToast(`Failed to process material: ${err.message}`, 'error');
-    }
+  try {
+    const watsonDoc = await generateWatsonDocument({ title, content, inlineData });
+    state.watsonDocument = watsonDoc;
+    state.currentParagraphIndex = 0;
+    renderWatsonDocument(watsonDoc);
+    closeIngestionModal();
+    showToast(`Watson's document generated: "${watsonDoc.title}"!`, 'success');
+    logTelemetry('WATSON_DOCUMENT_GENERATED', `Generated ${watsonDoc.paragraphs.length} paragraphs from uploaded notes.`);
+  } catch (err) {
+    console.error('Watson document generation error:', err);
+    showToast(`Failed to generate Watson document: ${err.message}`, 'error');
   }
 
   el.processIngestionBtn.disabled = false;
@@ -1068,15 +1095,6 @@ function setupEventListeners() {
   el.closeIngestionModalBtn.onclick = closeIngestionModal;
   el.cancelIngestionBtn.onclick = closeIngestionModal;
   el.processIngestionBtn.onclick = handleCustomMaterialIngest;
-
-  // New workflow toggle
-  const workflowToggle = document.getElementById('useNewWorkflowToggle');
-  if (workflowToggle) {
-    workflowToggle.onchange = (e) => {
-      state.useNewWorkflow = e.target.checked;
-      console.log('Workflow mode:', state.useNewWorkflow ? 'paragraph-based (new)' : 'presets-based (old)');
-    };
-  }
 
   // File Dropzone Event Listeners
   el.fileDropzone.onclick = () => el.studyFileInput.click();
