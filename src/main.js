@@ -241,7 +241,7 @@ function renderEmptyState() {
         No Study Material Ingested Yet
       </h3>
       <p style="font-size: 13px; color: var(--text-muted); max-width: 480px; margin: 0 auto 24px; line-height: 1.6;">
-        Upload your lecture slides, PDF syllabus, or paste your study notes. Dr. Watson will study your specific document and generate his case analysis with subtle misconceptions for you to diagnose.
+        Upload your lecture slides, PDF syllabus, or paste your study notes. Dr. Watson will study your document and generate an initial understanding. You'll then review and correct it paragraph by paragraph.
       </p>
       <button class="btn btn-primary" id="emptyStateUploadBtn" style="padding: 10px 24px; font-size: 13px;">
         📁 Upload Notes or PDF
@@ -352,6 +352,13 @@ function applyStrikethroughMarkup() {
   if (!state.selectedRange || !state.selectedText) return;
 
   const tag = el.toolTagSelect.value || 'CONCEPTUAL_FALLACY';
+  const correction = prompt('Provide your correction for this error:', '');
+  
+  if (!correction) {
+    showToast('Annotation cancelled.', 'info');
+    return;
+  }
+
   const span = document.createElement('span');
   span.className = 'red-strike';
   span.dataset.tag = tag;
@@ -364,13 +371,13 @@ function applyStrikethroughMarkup() {
   state.selectedRange.insertNode(span);
 
   // Add margin note
-  addMarginSticky(state.selectedText, tag, 'Gravity remains ~90% at orbital altitudes; the true cause of floating is perpetual freefall.');
+  addMarginSticky(state.selectedText, tag, correction);
 
   // Save annotation state
   state.annotations.push({
     text: state.selectedText,
     tag: tag,
-    note: 'Gravity remains ~90% at orbital altitudes; the true cause of floating is perpetual freefall.'
+    note: correction
   });
 
   // Hide toolbar & clear selection
@@ -432,7 +439,7 @@ function submitRedPenCritique() {
 
   // Watson reacts dynamically to the red marks!
   addChatMessage('holmes', `Watson, look at the claim you made here: "${state.annotations[0].text}". That is an incorrect assumption—${state.annotations[0].note}`);
-  
+
   setTimeout(() => {
     addChatMessage('watson', state.currentCase.watsonDialogue.onAudit);
     renderRemediationStudio();
@@ -440,6 +447,9 @@ function submitRedPenCritique() {
 
   // Log Moriarty telemetry
   logTelemetry('RED_PEN_AUDIT_SUBMITTED', `Teacher annotated 1 critical misconception (${state.annotations[0].tag}).`);
+
+  // Auto-push changes to git
+  autoGitPush(`Red pen critique submitted - ${state.annotations.length} annotation(s)`);
 }
 
 function renderRemediationStudio() {
@@ -513,7 +523,7 @@ function executeWatsonRetest() {
   setTimeout(() => {
     addChatMessage(
       'watson',
-      `*Thinking Trace:* "Let's see... Distractor 1 claims the vacuum of space blocks gravity—an absurd notion. Distractor 2 claims centrifugal force physically cancels it... Wait! The lesson reminds me of an elevator in freefall! Both the scale and the astronaut accelerate towards Earth together at 8.9 m/s²!"`
+      `*Thinking Trace:* "Let me evaluate each option against what you taught me... The distractors seem to appeal to my earlier misunderstanding, but your lesson clarifies the actual mechanism. I should apply that reasoning here."`
     );
 
     setTimeout(() => {
@@ -527,7 +537,7 @@ function executeWatsonRetest() {
       el.watsonMasteryVal.textContent = `${newMastery}%`;
       el.watsonStatusText.textContent = 'Mastery Achieved';
       el.watsonStatusBadge.style.color = '#10b981';
-      el.watsonActiveBelief.textContent = `"Orbital weightlessness is perpetual freefall with zero normal force."`;
+      el.watsonActiveBelief.textContent = `"${state.currentCase.activeBelief}" (updated based on your guidance)`;
 
       // Update Phase
       state.currentPhase = 'PHASE_4_RESOLVED';
@@ -539,6 +549,9 @@ function executeWatsonRetest() {
 
       logTelemetry('WATSON_RETEST_SUCCESS', `Watson resolved misconception. Mastery increased to ${newMastery}%.`);
       logTelemetry('BLOOM_DEPTH_EVALUATION', `Authored question scored Bloom Level 4.6 (Analytical rigor).`);
+
+      // Auto-push changes to git
+      autoGitPush(`Watson resolved misconception - Mastery increased to ${newMastery}%`);
 
       // Prompt Moriarty Dossier
       setTimeout(() => {
@@ -963,6 +976,21 @@ function escapeHtml(str) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#039;');
+}
+
+async function autoGitPush(message) {
+  try {
+    // Note: Auto git push from browser requires backend service
+    // This is a placeholder for the functionality
+    // Implementation options:
+    // 1. Backend API endpoint that runs git commands
+    // 2. GitHub Actions triggered via API
+    // 3. Client-side git library (isomorphic-git)
+    console.log(`[Git Auto-push] Would commit: ${message}`);
+    showToast('Changes saved (auto-push pending backend)', 'info');
+  } catch (err) {
+    console.warn('Auto git push failed:', err.message);
+  }
 }
 
 // Bootstrap
