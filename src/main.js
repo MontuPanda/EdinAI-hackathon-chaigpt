@@ -356,20 +356,45 @@ function renderCurrentParagraph() {
 
   if (!paragraph) return;
 
+  // Show correction count if any
+  const correctionCount = paragraph.corrections.length;
+  const correctionBadge = correctionCount > 0
+    ? `<span style="margin-left: 8px; background: var(--accent-crimson); color: white; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 700;">
+        ${correctionCount} correction${correctionCount > 1 ? 's' : ''}
+       </span>`
+    : '';
+
   // Show paragraph with topic header - make text selectable for Red Pen
   el.manuscriptContent.innerHTML = `
     <div id="currentParagraphContainer" style="margin-bottom: 24px;">
-      <div style="font-size: 11px; color: var(--accent-gold); font-weight: 700; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;">
+      <div style="font-size: 11px; color: var(--accent-gold); font-weight: 700; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px; display: flex; align-items: center;">
         Topic: ${escapeHtml(paragraph.topic || 'General')}
+        ${correctionBadge}
       </div>
       <p id="paragraphText" style="font-size: 14px; line-height: 1.7; color: var(--text-primary); user-select: text;">
         ${escapeHtml(paragraph.content)}
       </p>
-      <div style="margin-top: 12px; font-size: 11px; color: var(--text-muted);">
-        Confidence: ${Math.round(paragraph.confidence * 100)}%
+      <div style="margin-top: 12px; font-size: 11px; color: var(--text-muted); display: flex; justify-content: space-between;">
+        <span>Confidence: ${Math.round(paragraph.confidence * 100)}%</span>
+        <span>${paragraph.isCorrected ? '✓ Corrected' : '⏳ Pending review'}</span>
       </div>
     </div>
   `;
+
+  // Show correction history in margin notes
+  if (paragraph.corrections.length > 0) {
+    el.marginNotesColumn.innerHTML = paragraph.corrections.map((corr, i) => `
+      <div class="margin-sticky" style="border-left: 3px solid var(--accent-crimson);">
+        <span class="sticky-tag">✒️ ${escapeHtml(corr.tag)}</span>
+        <p style="font-size: 11px; color: var(--text-secondary); margin-bottom: 4px;">
+          "${escapeHtml(corr.selectedText)}"
+        </p>
+        <p><strong>Correction:</strong> ${escapeHtml(corr.userCorrection)}</p>
+      </div>
+    `).join('');
+  } else {
+    el.marginNotesColumn.innerHTML = '';
+  }
 }
 
 function renderParagraphNavigation() {
@@ -445,7 +470,17 @@ function completeDocumentReview() {
   el.currentPhaseTag.style.color = '#10b981';
   el.currentPhaseTag.style.borderColor = '#10b981';
 
+  // Calculate overall accuracy
+  const doc = state.watsonDocument;
+  const avgConfidence = doc.paragraphs.reduce((sum, p) => sum + p.confidence, 0) / doc.paragraphs.length;
+  const totalCorrections = doc.paragraphs.reduce((sum, p) => sum + p.corrections.length, 0);
+
   el.canvasActionGroup.innerHTML = `
+    <div style="display: flex; gap: 12px; align-items: center; margin-bottom: 12px; font-size: 12px; color: var(--text-muted);">
+      <span>Total corrections: ${totalCorrections}</span>
+      <span>•</span>
+      <span>Average confidence: ${Math.round(avgConfidence * 100)}%</span>
+    </div>
     <button class="btn btn-primary" id="requestMoriartyBtn">
       🕷️ Request Moriarty's Evaluation
     </button>
@@ -453,8 +488,11 @@ function completeDocumentReview() {
 
   document.getElementById('requestMoriartyBtn').onclick = openMoriartyDossier;
 
-  addChatMessage('watson', 'I\'ve completed my document based on your corrections. Thank you for teaching me!');
+  addChatMessage('watson', `I've completed my document based on your ${totalCorrections} correction${totalCorrections !== 1 ? 's' : ''}. Thank you for teaching me!`);
   showToast('Document review complete! Moriarty will evaluate the final document.', 'success');
+
+  // Auto git push
+  autoGitPush('Document review complete - requesting Moriarty evaluation');
 }
 
 function renderCanvasActions() {
