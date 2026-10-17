@@ -7,16 +7,97 @@
 
 import { gemini } from './gemini.js';
 
+export function summarizeEvaluation({ recall = 0, falseAlarms = 0, noteQuality = 0, lessonAccurate = true, questionBloom = 0, distractorPlausibility = 0 } = {}) {
+  const diagnosticRecall = Number(recall || 0);
+  const lessonStatus = lessonAccurate ? 'accurate' : 'weak';
+
+  let rubricStatus = 'weak';
+  if (diagnosticRecall >= 0.6 && falseAlarms <= 1 && lessonAccurate && questionBloom >= 4 && distractorPlausibility >= 2) {
+    rubricStatus = 'strong';
+  } else if (diagnosticRecall >= 0.4 || lessonAccurate) {
+    rubricStatus = 'mixed';
+  }
+
+  return {
+    diagnosticRecall,
+    falseAlarmCount: Number(falseAlarms || 0),
+    noteQuality: Number(noteQuality || 0),
+    lessonStatus,
+    questionLevel: Number(questionBloom || 0),
+    distractorScore: Number(distractorPlausibility || 0),
+    rubricStatus
+  };
+}
+
+export function buildTutorContext({ question, sourceMaterial, evaluation }) {
+  const teachingEvaluation = evaluation?.userTeachingEvaluation || {};
+  return [
+    `User asks: "${question}"`,
+    '',
+    'Source material:',
+    sourceMaterial || 'No source material provided.',
+    '',
+    'Latest Moriarty evaluation:',
+    evaluation?.overallVerdict || 'No evaluation available yet.',
+    teachingEvaluation.detailedFeedback || '',
+    'Errors the user missed:',
+    JSON.stringify(teachingEvaluation.missedErrors || [], null, 2)
+  ].join('\n');
+}
+
+export function summarizeUserErrors({ annotations = [], flawedSentences = [], evaluation = {} } = {}) {
+  const issues = [];
+  const seen = new Set();
+
+  const addIssue = (sentenceId, detail) => {
+    const cleanDetail = String(detail || '').replace(/\s+/g, ' ').trim();
+    if (!cleanDetail) return;
+
+    const key = `${sentenceId || 'issue'}::${cleanDetail}`;
+    if (seen.has(key)) return;
+
+    seen.add(key);
+    issues.push(cleanDetail);
+  };
+
+  (annotations || []).forEach((annotation) => {
+    const sentenceId = annotation.sentence_id || annotation.id || 'issue';
+    const detail = annotation.note || annotation.userCorrection || annotation.reason || annotation.explanation || annotation.text;
+    addIssue(sentenceId, detail);
+  });
+
+  if (issues.length) {
+    return issues.slice(0, 4);
+  }
+
+  (flawedSentences || []).forEach((sentence, index) => {
+    if (issues.length >= 4) return;
+
+    const sentenceId = sentence.id || sentence.sentence_id || `sentence-${index + 1}`;
+    const detail = sentence.error || sentence.reason || sentence.note || sentence.explanation || sentence.errorText || sentence.text;
+    addIssue(sentenceId, detail);
+  });
+
+  if (!issues.length && evaluation?.userTeachingEvaluation?.missedErrors) {
+    const missed = Number(evaluation.userTeachingEvaluation.missedErrors || 0);
+    if (missed > 0) {
+      issues.push(`Missed errors: ${missed} important points were not flagged.`);
+    }
+  }
+
+  return issues.slice(0, 4);
+}
+
 /**
  * Evaluates Watson's final document and user's teaching
  * @param {Object} params - { watsonDocument, sourceMaterial }
  * @returns {Promise<Object>} MoriartyEvaluation
  */
-export async function evaluateWatsonDocument({ watsonDocument, sourceMaterial }) {
-  const systemInstruction = `You are Professor James Moriarty, a mathematical genius and expert evaluator with complete knowledge of the subject matter.
+export async function evaluateWatsonDocument({ watsonDocument, sourceMaterial, inlineData }) {
+  const systemInstruction = `You are an expert, plain-spoken evaluator. Compare Watson's understanding with the uploaded source and assess which user corrections were accurate.
 
 ### YOUR TASK:
-Evaluate Dr. Watson's final document and Sherlock Holmes's teaching effectiveness.
+Evaluate Watson's original document, the user's teaching and corrections, and Watson's final document.
 
 ### WHAT YOU KNOW:
 1. The original study material (ground truth)
@@ -24,16 +105,12 @@ Evaluate Dr. Watson's final document and Sherlock Holmes's teaching effectivenes
 3. All corrections Holmes provided
 
 ### EVALUATION CRITERIA:
-1. Watson's Final Document Accuracy:
-   - How accurately does Watson's final document reflect the ground truth?
-   - Are there remaining misconceptions?
-   - What's the overall accuracy percentage?
-
-2. Holmes's Teaching Quality:
-   - Were Holmes's corrections accurate?
-   - Did Holmes miss any errors?
-   - Did Holmes flag correct statements as errors (false positives)?
-   - How effective was the teaching?
+1. Compare every factual claim in Watson's original paragraphs with the uploaded source.
+2. For each distinct false, unsupported, or materially incomplete claim, check whether the user's corrections or chat teaching addressed it.
+3. Include EVERY distinct issue the user did not correct in missedErrors. Do not cap the list or merge unrelated errors. Identify Watson's original claim, state the source-grounded correction, identify its paragraph where possible, and briefly explain significance.
+4. Do not call a claim missed if the user corrected it elsewhere in the conversation or teaching notes. Do not invent errors when the source does not support a clear conclusion.
+5. Report false positives separately: user corrections that contradict the uploaded source.
+6. Distinguish errors missed by the user from misconceptions still present in Watson's final document.
 
 ### OUTPUT SCHEMA:
 Return valid JSON:
@@ -52,12 +129,21 @@ Return valid JSON:
     "correctionsMade": 5,
     "accurateCorrections": 4,
     "falsePositives": 1,
-    "missedErrors": 2,
+    "missedErrors": [
+      {
+        "paragraphId": "p2",
+        "claim": "Watson's original incorrect or incomplete claim",
+        "correctUnderstanding": "What the uploaded source says instead",
+        "whyItMatters": "Why this distinction matters",
+        "severity": "major | moderate | minor"
+      }
+    ],
+    "missedErrorCount": 1,
     "teachingQuality": 0.75,
     "detailedFeedback": "Detailed explanation of teaching quality..."
   },
-  "overallVerdict": "Overall assessment in Moriarty's voice",
-  "monologue": "~150 word monologue addressing Holmes directly"
+  "overallVerdict": "Concise, plain-language assessment",
+  "monologue": "Concise plain-language explanation of the main finding"
 }
 
 Return JSON only, no markdown fences.`;
@@ -78,6 +164,7 @@ Return JSON only, no markdown fences.`;
     content: p.content,
     confidence: p.confidence
   }));
+  const initialDocument = watsonDocument.initialParagraphs || finalDocument;
 
   const prompt = `
 STUDY MATERIAL (Ground Truth):
@@ -86,8 +173,12 @@ ${sourceMaterial}
 WATSON'S FINAL DOCUMENT:
 ${JSON.stringify(finalDocument, null, 2)}
 
-HOLMES'S CORRECTIONS:
+WATSON'S ORIGINAL DOCUMENT BEFORE ANY CORRECTIONS:
+${JSON.stringify(initialDocument, null, 2)}
+
+USER'S CORRECTIONS AND CHAT TEACHING:
 ${JSON.stringify(correctionsList, null, 2)}
+${JSON.stringify(watsonDocument.teachingNotes || [], null, 2)}
 
 WATSON'S SELF-ASSESSMENT:
 ${watsonDocument.selfAssessment}
@@ -98,6 +189,7 @@ Evaluate both Watson's final understanding and Holmes's teaching effectiveness.`
     const rawJson = await gemini.generateContent({
       systemInstruction,
       prompt,
+      inlineData,
       temperature: 0.3,
       jsonMode: true
     });
@@ -108,6 +200,16 @@ Evaluate both Watson's final understanding and Holmes's teaching effectiveness.`
 
     const cleanJson = rawJson.replace(/```json/g, '').replace(/```/g, '').trim();
     const evaluation = JSON.parse(cleanJson);
+
+    const teachingEvaluation = evaluation.userTeachingEvaluation || {};
+    if (Array.isArray(teachingEvaluation.missedErrors)) {
+      teachingEvaluation.missedErrorCount = teachingEvaluation.missedErrors.length;
+    } else {
+      teachingEvaluation.missedErrors = [];
+      teachingEvaluation.missedErrorCount = Number(teachingEvaluation.missedErrorCount || 0);
+      teachingEvaluation.analysisAvailable = false;
+    }
+    evaluation.userTeachingEvaluation = teachingEvaluation;
 
     // Add metadata
     evaluation.session = {
@@ -143,12 +245,14 @@ function generateFallbackEvaluation(watsonDocument, correctionsList) {
       correctionsMade: correctionsList.length,
       accurateCorrections: correctionsList.length,
       falsePositives: 0,
-      missedErrors: 0,
+      missedErrors: [],
+      missedErrorCount: 0,
+      analysisAvailable: false,
       teachingQuality: avgConfidence,
-      detailedFeedback: `Holmes provided ${correctionsList.length} corrections. Watson's average confidence is ${Math.round(avgConfidence * 100)}%.`
+      detailedFeedback: `Detailed source comparison was unavailable. Watson's average confidence is ${Math.round(avgConfidence * 100)}%.`
     },
-    overallVerdict: 'LLM evaluation unavailable. Using confidence-based scoring.',
-    monologue: `My dear Holmes, you provided ${correctionsList.length} corrections to Watson. His confidence level is now ${Math.round(avgConfidence * 100)}%. I would need more context to give a full evaluation.`
+    overallVerdict: 'Detailed source comparison is unavailable. This report only includes confidence-based scoring.',
+    monologue: 'A source-grounded review could not be completed.'
   };
 }
 
@@ -167,10 +271,10 @@ You are helping Sherlock Holmes (the user) clarify his own understanding.
 - Your evaluation of Holmes's teaching
 
 ### YOUR ROLE:
-Answer Holmes's questions with precision and authority. Be educational but concise.
-Reference the source material when helpful. Maintain your character: cold, precise, intellectually admiring.
+Answer Holmes's questions with precision and authority. Be educational, direct, and concise.
+Reference the source material when helpful. Avoid theatrical language and stay plain and professional.
 
-Respond in 1-3 sentences unless a longer explanation is clearly needed.`;
+Respond in 2-4 sentences unless a longer explanation is clearly needed.`;
 
   const prompt = `
 STUDY MATERIAL:
@@ -196,6 +300,6 @@ Answer his question.`;
     return response || 'I am unable to provide guidance at this moment.';
   } catch (err) {
     console.error('Moriarty tutor failed:', err);
-    return 'My apologies, Holmes. I am currently unable to assist with your question.';
+    return 'I cannot answer that question at the moment. Please rephrase it or try again later.';
   }
 }

@@ -21,7 +21,7 @@
     <!-- Top Victorian-Modern Navigation Bar -->
     <header class="top-nav">
       <div class="brand-group">
-        <div class="brand-crest">221B</div>
+        <img class="brand-crest" src="./logo/221B_logo.jpeg" alt="221B Baker Street">
         <div class="brand-text">
           <h1 class="brand-title">PROTÉGÉ</h1>
           <span class="brand-subtitle">The Inverted Pedagogy Platform</span>
@@ -39,20 +39,20 @@
 
       <div class="nav-actions">
         <!-- Watson Mastery Pill -->
-        <div class="stat-pill" id="watsonMasteryPill" title="Dr. Watson's Current Topic Mastery">
+        <div class="stat-pill" id="watsonMasteryPill" title="AI-estimated understanding from the generated document; not a measured score">
           <span class="stat-avatar">🩺</span>
-          <span class="stat-name">Watson</span>
+          <span class="stat-name">Watson est.</span>
           <div class="stat-progress-bar">
-            <div class="stat-progress-fill" id="watsonMasteryBar" style="width: 78%;"></div>
+            <div class="stat-progress-fill" id="watsonMasteryBar" style="width: 0%;"></div>
           </div>
-          <span class="stat-val" id="watsonMasteryVal">78%</span>
+          <span class="stat-val" id="watsonMasteryVal">—</span>
         </div>
 
         <!-- Moriarty Shadow Trigger -->
         <button class="moriarty-btn" id="openMoriartyBtn" title="Review Professor Moriarty's Shadow Dossier">
           <span class="spider-icon">🕷️</span>
           <span class="moriarty-label">Moriarty's Dossier</span>
-          <span class="badge-count" id="telemetryEventCount">3</span>
+          <span class="badge-count" id="telemetryEventCount">0</span>
         </button>
 
         <!-- API Settings Trigger -->
@@ -76,7 +76,7 @@
             </div>
             <div class="agent-meta">
               <h2 class="agent-name">Dr. John H. Watson</h2>
-              <span class="agent-role">Pupil & Companion (ZPD ~80%)</span>
+              <span class="agent-role">Learner</span>
             </div>
           </div>
           <div class="agent-status-badge" id="watsonStatusBadge">
@@ -89,7 +89,7 @@
         <div class="cognitive-card">
           <div class="card-header-sm">
             <span>WATSON'S ACTIVE INTELLECT</span>
-            <span class="badge-zpd">Zone of Prox. Dev.</span>
+            <span class="badge-zpd">Learning with guidance</span>
           </div>
           <div class="misconception-tracker">
             <span class="tracker-title">Active Mental Model:</span>
@@ -108,7 +108,7 @@
 
         <!-- Quick Interaction / Pushback bar -->
         <div class="dialogue-input-bar">
-          <input type="text" id="socraticInput" placeholder="Speak to Watson or challenge his reasoning..." autocomplete="off">
+          <input type="text" id="socraticInput" placeholder="Teach Watson or point out an error..." autocomplete="off">
           <button id="sendSocraticBtn" class="send-btn" title="Send Socratic Message">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/>
@@ -123,32 +123,13 @@
         <!-- Canvas Stage Header -->
         <div class="canvas-header">
           <div class="canvas-title-group">
-            <span class="phase-tag" id="currentPhaseTag">PHASE 2: RED PEN AUDIT</span>
+            <span class="phase-tag" id="currentPhaseTag">PHASE 2: PARAGRAPH REVIEW</span>
             <h2 class="canvas-doc-title" id="canvasDocTitle">Watson's Working Parchment: Mechanics of Orbital Freefall</h2>
           </div>
           
           <div class="canvas-actions" id="canvasActionGroup">
             <!-- Actions will reflect state -->
           </div>
-        </div>
-
-        <!-- Red Pen Toolbar (Visible when text selected) -->
-        <div class="red-pen-toolbar" id="redPenToolbar">
-          <span class="toolbar-brand">✒️ RED PEN:</span>
-          <button class="tool-btn strike-btn" id="toolStrikeBtn" title="Strike through flawed assertion">
-            <span class="btn-symbol">S</span> Strike Error
-          </button>
-          <div class="tool-divider"></div>
-          <select class="tool-select" id="toolTagSelect">
-            <option value="" disabled selected>Tag Fallacy Type...</option>
-            <option value="CONCEPTUAL_FALLACY">Conceptual Fallacy</option>
-            <option value="BOUNDARY_CONDITION">Missing Boundary Condition</option>
-            <option value="CORRELATION_VS_CAUSATION">Correlation vs Causation</option>
-            <option value="SUPERFICIAL_DEDUCTION">Superficial Deduction</option>
-          </select>
-          <button class="tool-btn comment-btn" id="toolCommentBtn" title="Attach Sherlock's Margin Note">
-            💬 Add Margin Note
-          </button>
         </div>
 
         <!-- The Document Canvas (Watson's Draft) -->

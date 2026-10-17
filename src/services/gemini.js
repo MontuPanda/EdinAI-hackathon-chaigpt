@@ -13,21 +13,32 @@ const STORAGE_KEYS = {
 
 const BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
 
+const safeStorage = {
+  getItem(key) {
+    if (typeof globalThis.localStorage === 'undefined') return null;
+    return globalThis.localStorage.getItem(key);
+  },
+  setItem(key, value) {
+    if (typeof globalThis.localStorage === 'undefined') return;
+    globalThis.localStorage.setItem(key, value);
+  }
+};
+
 class GeminiClient {
   constructor() {
-    this.primaryKey = localStorage.getItem(STORAGE_KEYS.PRIMARY) || '';
-    this.secondaryKey = localStorage.getItem(STORAGE_KEYS.SECONDARY) || '';
+    this.primaryKey = safeStorage.getItem(STORAGE_KEYS.PRIMARY) || '';
+    this.secondaryKey = safeStorage.getItem(STORAGE_KEYS.SECONDARY) || '';
     
     // Auto-migrate legacy 1.5/2.0 to 3.8 Flash
-    const storedModel = localStorage.getItem(STORAGE_KEYS.MODEL);
+    const storedModel = safeStorage.getItem(STORAGE_KEYS.MODEL);
     if (!storedModel || storedModel.startsWith('gemini-1.') || storedModel.startsWith('gemini-2.0')) {
       this.model = 'gemini-3.8-flash';
-      localStorage.setItem(STORAGE_KEYS.MODEL, this.model);
+      safeStorage.setItem(STORAGE_KEYS.MODEL, this.model);
     } else {
       this.model = storedModel;
     }
 
-    this.isMockMode = localStorage.getItem(STORAGE_KEYS.MOCK_MODE) === 'true';
+    this.isMockMode = safeStorage.getItem(STORAGE_KEYS.MOCK_MODE) === 'true';
   }
 
   setKeys({ primaryKey, secondaryKey, model, mockMode = false }) {
@@ -36,10 +47,10 @@ class GeminiClient {
     this.model = model || 'gemini-3.8-flash';
     this.isMockMode = !!mockMode;
 
-    localStorage.setItem(STORAGE_KEYS.PRIMARY, this.primaryKey);
-    localStorage.setItem(STORAGE_KEYS.SECONDARY, this.secondaryKey);
-    localStorage.setItem(STORAGE_KEYS.MODEL, this.model);
-    localStorage.setItem(STORAGE_KEYS.MOCK_MODE, this.isMockMode ? 'true' : 'false');
+    safeStorage.setItem(STORAGE_KEYS.PRIMARY, this.primaryKey);
+    safeStorage.setItem(STORAGE_KEYS.SECONDARY, this.secondaryKey);
+    safeStorage.setItem(STORAGE_KEYS.MODEL, this.model);
+    safeStorage.setItem(STORAGE_KEYS.MOCK_MODE, this.isMockMode ? 'true' : 'false');
   }
 
   hasValidKey() {

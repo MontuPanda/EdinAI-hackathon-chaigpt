@@ -133,20 +133,11 @@ body {
 }
 
 .brand-crest {
-  width: 38px;
-  height: 38px;
-  border: 1.5px solid var(--accent-gold);
-  border-radius: var(--radius-sm);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-family: var(--font-serif);
-  font-weight: 900;
-  font-size: 13px;
-  color: var(--accent-gold);
-  background: rgba(214, 158, 46, 0.08);
-  box-shadow: var(--shadow-glow-gold);
-  letter-spacing: 0.5px;
+  width: 64px;
+  height: 42px;
+  flex: 0 0 auto;
+  object-fit: contain;
+  mix-blend-mode: screen;
 }
 
 .brand-title {
@@ -617,70 +608,6 @@ body {
   gap: 10px;
 }
 
-/* Floating Red Pen Toolbar */
-.red-pen-toolbar {
-  position: absolute;
-  top: 72px;
-  left: 50%;
-  transform: translateX(-50%) translateY(-10px);
-  background: #1c2333;
-  border: 1px solid var(--red-ink);
-  box-shadow: var(--shadow-glow-red), var(--shadow-lg);
-  padding: 6px 12px;
-  border-radius: var(--radius-full);
-  display: none; /* Shown via JS upon text selection */
-  align-items: center;
-  gap: 8px;
-  z-index: 100;
-  animation: dropIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-}
-
-@keyframes dropIn {
-  to { transform: translateX(-50%) translateY(0); opacity: 1; }
-}
-
-.toolbar-brand {
-  font-size: 11px;
-  font-weight: 800;
-  color: var(--red-ink);
-  letter-spacing: 0.5px;
-}
-
-.tool-btn {
-  background: rgba(240, 62, 62, 0.15);
-  border: 1px solid rgba(240, 62, 62, 0.3);
-  color: #ffc9c9;
-  font-size: 11px;
-  font-weight: 600;
-  padding: 4px 10px;
-  border-radius: var(--radius-full);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  transition: all 0.15s ease;
-}
-.tool-btn:hover {
-  background: var(--red-ink);
-  color: #fff;
-}
-
-.tool-select {
-  background: #121722;
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  color: var(--text-primary);
-  font-size: 11px;
-  padding: 4px 8px;
-  border-radius: var(--radius-sm);
-  outline: none;
-}
-
-.tool-divider {
-  width: 1px;
-  height: 16px;
-  background: rgba(255, 255, 255, 0.15);
-}
-
 /* Document Stage & Parchment */
 .document-stage {
   flex: 1;
@@ -734,6 +661,13 @@ body {
   height: 2px;
   background: var(--red-ink);
   animation: strikeDraw 0.3s ease forwards;
+}
+
+.auto-error-flag {
+  color: #8f1d1d;
+  background: rgba(255, 120, 120, 0.24);
+  border-bottom: 2px wavy #c43e3e;
+  border-radius: 2px;
 }
 
 @keyframes strikeDraw {

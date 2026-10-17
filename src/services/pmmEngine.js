@@ -1,7 +1,7 @@
 /**
  * PROTÉGÉ: Plausible Misconceptions Matrix (PMM) & Case Generator Engine
  * Ingests user-uploaded study notes/textbook chapters, extracts canonical truths,
- * and dynamically seeds Dr. Watson's ~80% grasp draft in the exact technical language of the upload.
+ * and dynamically seeds Dr. Watson's novice-level draft in the exact technical language of the upload.
  */
 
 import { gemini } from './gemini.js';
@@ -22,13 +22,15 @@ You are processing study notes/textbook chapters uploaded by a student mentor (H
    - Instead, Watson only possesses the PREREQUISITE BASELINE knowledge leading up to this topic.
    - He has enough foundational background so that the topic is NOT impossibly difficult to grasp, BUT he has not yet learned the new mechanisms in the uploaded document.
    - He relies on conventional intuition, common-sense heuristics, or classical/naive prior models.
-   - As a result, when Watson attempts to analyze the problem, he naturally makes a fundamental conceptual error by assuming conventional logic applies where the new uploaded breakthrough is actually required!
+  - Watson begins with only about 20-30% understanding of the target material and has not learned its central ideas.
+  - Seed 4-8 distinct, plausible misconceptions across the draft. Every misconception must be grounded in and correctable from the uploaded notes; do not invent absurd or unsupported claims.
+  - He relies on conventional intuition or prerequisite knowledge and needs the user to explain the uploaded material in detail.
 
 ### CRITICAL REGISTER & TONE RULE:
 The application wrapper uses a Victorian 221B motif for UI branding (Holmes/Watson/Moriarty).
 HOWEVER, all academic content, drafts, and dialogue MUST STRICTLY REFLECT the actual modern domain, terminology, and technical register of the uploaded material (e.g. undergraduate engineering, medical biochemistry, distributed systems).
 DO NOT use archaic Victorian language (no "By Jove", "Good heavens", or 19th-century pastiche).
-Watson speaks as an intelligent, contemporary university student / peer researcher (~45-50% initial grasp of this new topic).
+Watson speaks as an intelligent, contemporary beginner with about 20-30% initial grasp of this new topic.
 
 ### REQUIRED JSON SCHEMA:
 Output valid, parseable JSON with the following exact keys:
@@ -37,7 +39,7 @@ Output valid, parseable JSON with the following exact keys:
   "title": "${title ? title.replace(/"/g, '') : 'Extracted Topic'}",
   "category": "Domain Category (e.g. Computer Science, Physics, Medicine, Law)",
   "difficulty": "MODERATE" | "DIFFICULT",
-  "initialMastery": 45,
+  "initialMastery": 25,
   "targetMastery": 90,
   "prerequisiteFoundation": "1-2 sentences describing the background knowledge Watson already understands (the vocabulary that allows him to grasp the topic without knowing the uploaded breakthrough).",
   "activeBelief": "Watson's naive starting belief—how he tries to explain the problem using conventional intuition before being taught the uploaded material.",
@@ -55,7 +57,7 @@ Output valid, parseable JSON with the following exact keys:
       "category": "CONCEPTUAL_FALLACY" | "BOUNDARY_CONDITION" | "CORRELATION_VS_CAUSATION"
     }
   ],
-  "watsonInitialDraft": "A realistic 3-paragraph draft written from the perspective of an intelligent student who knows the prerequisites but has NOT learned the uploaded material yet. Paragraph 1: He outlines the problem using his foundational vocabulary. Paragraph 2: He applies conventional common-sense or outdated theory, asserting the naive misconception as fact. Paragraph 3: He draws a flawed conclusion based on that naive assumption, clearly needing to be taught the uploaded material.",
+  "watsonInitialDraft": "A realistic 3-5 paragraph draft from an intelligent beginner who knows prerequisites but has NOT learned the uploaded material. Include 1-2 distinct, substantial, plausible errors per paragraph (4-8 total), each specifically correctable from the uploaded source. Keep the draft coherent, but do not accurately explain most of the source's core ideas.",
   "suggestedAnnotations": [
     {
       "targetPhrase": "Exact sentence in paragraph 2 where Watson's naive assumption is stated",

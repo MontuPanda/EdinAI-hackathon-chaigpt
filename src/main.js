@@ -5,17 +5,18 @@
 
 import { gemini } from './services/gemini.js';
 import { generateCaseFromMaterial } from './services/pmmEngine.js';
-import { generateWatsonDocument, updateParagraphFromCorrection } from './services/watsonDocumentGenerator.js';
+import { applyTeachingToDocument, generateWatsonDocument } from './services/watsonDocumentGenerator.js';
+import { buildAnnotationPayload, computeDiagnosticMetrics } from './services/sessionMetrics.js';
+import { askMoriartyTutor, evaluateWatsonDocument, summarizeUserErrors } from './services/moriartyEvaluator.js';
 
 // Application State
 const state = {
   currentCase: null,
   currentPhase: 'PHASE_1_AWAITING_NOTES', // 'PHASE_1_AWAITING_NOTES' | 'PHASE_2_AUDIT' | 'PHASE_3_REMEDIATION' | 'PHASE_4_RESOLVED'
   annotations: [],
-  selectedRange: null,
-  selectedText: '',
   attachedFile: null,
   telemetryLogs: [],
+  eventLog: [],
   // Watson document state for paragraph-based workflow
   watsonDocument: null,
   currentParagraphIndex: 0
@@ -49,10 +50,6 @@ const el = {
   canvasActionGroup: document.getElementById('canvasActionGroup'),
   manuscriptContent: document.getElementById('manuscriptContent'),
   marginNotesColumn: document.getElementById('marginNotesColumn'),
-  redPenToolbar: document.getElementById('redPenToolbar'),
-  toolStrikeBtn: document.getElementById('toolStrikeBtn'),
-  toolTagSelect: document.getElementById('toolTagSelect'),
-  toolCommentBtn: document.getElementById('toolCommentBtn'),
   remediationStudio: document.getElementById('remediationStudio'),
 
   // Modals
@@ -222,6 +219,7 @@ function renderEmptyState() {
   state.currentCase = null;
   state.currentPhase = 'PHASE_1_AWAITING_NOTES';
 
+  el.telemetryEventCount.textContent = state.telemetryLogs.length;
   el.currentCaseName.textContent = 'No Notes Uploaded';
   el.openManifestBtn.style.display = 'none';
   el.openIngestionBtn.textContent = '📁 Upload Notes';
@@ -264,6 +262,7 @@ function renderEmptyState() {
 function renderCase(caseData) {
   state.currentCase = caseData;
   state.annotations = [];
+  state.eventLog = [];
   state.currentPhase = 'PHASE_2_AUDIT';
 
   // Update Nav
@@ -314,6 +313,10 @@ function renderCase(caseData) {
 }
 
 function renderWatsonDocument(watsonDoc) {
+  if (!watsonDoc.initialParagraphs) {
+    watsonDoc.initialParagraphs = watsonDoc.paragraphs.map(({ id, topic, content }) => ({ id, topic, content }));
+  }
+
   state.watsonDocument = watsonDoc;
   state.currentParagraphIndex = 0;
   state.currentPhase = 'PHASE_2_PARAGRAPH_REVIEW';
@@ -358,7 +361,8 @@ function renderCurrentParagraph() {
   if (!paragraph) return;
 
   // Show correction count if any
-  const correctionCount = paragraph.corrections.length;
+  const corrections = paragraph.corrections || [];
+  const correctionCount = corrections.length;
   const correctionBadge = correctionCount > 0
     ? `<span style="margin-left: 8px; background: var(--accent-crimson); color: white; padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 700;">
         ${correctionCount} correction${correctionCount > 1 ? 's' : ''}
@@ -373,7 +377,7 @@ function renderCurrentParagraph() {
         ${correctionBadge}
       </div>
       <p id="paragraphText" style="font-size: 14px; line-height: 1.7; color: var(--text-primary); user-select: text;">
-        ${escapeHtml(paragraph.content)}
+        ${renderParagraphWithErrorFlags(paragraph)}
       </p>
       <div style="margin-top: 12px; font-size: 11px; color: var(--text-muted); display: flex; justify-content: space-between;">
         <span>Confidence: ${Math.round(paragraph.confidence * 100)}%</span>
@@ -383,10 +387,10 @@ function renderCurrentParagraph() {
   `;
 
   // Show correction history in margin notes
-  if (paragraph.corrections.length > 0) {
-    el.marginNotesColumn.innerHTML = paragraph.corrections.map((corr, i) => `
+  if (corrections.length > 0) {
+    el.marginNotesColumn.innerHTML = corrections.map((corr) => `
       <div class="margin-sticky" style="border-left: 3px solid var(--accent-crimson);">
-        <span class="sticky-tag">✒️ ${escapeHtml(corr.tag)}</span>
+        <span class="sticky-tag">${corr.tag === 'CHAT_IDENTIFIED_ERROR' ? 'CHAT-FLAGGED ERROR' : escapeHtml(corr.tag)}</span>
         <p style="font-size: 11px; color: var(--text-secondary); margin-bottom: 4px;">
           "${escapeHtml(corr.selectedText)}"
         </p>
@@ -396,6 +400,25 @@ function renderCurrentParagraph() {
   } else {
     el.marginNotesColumn.innerHTML = '';
   }
+}
+
+function renderParagraphWithErrorFlags(paragraph) {
+  const content = String(paragraph.content || '');
+  const matches = (paragraph.flaggedErrors || [])
+    .map((error) => ({ error, start: content.indexOf(error.text) }))
+    .filter((match) => match.start >= 0)
+    .sort((left, right) => left.start - right.start);
+
+  let html = '';
+  let cursor = 0;
+  matches.forEach(({ error, start }) => {
+    if (start < cursor) return;
+    html += escapeHtml(content.slice(cursor, start));
+    html += `<mark class="auto-error-flag" title="${escapeHtml(error.explanation || 'Flagged from chat')}">${escapeHtml(error.text)}</mark>`;
+    cursor = start + error.text.length;
+  });
+
+  return html + escapeHtml(content.slice(cursor));
 }
 
 function renderParagraphNavigation() {
@@ -520,106 +543,6 @@ function renderCanvasActions() {
 /* ==========================================================================
    RED PEN CANVAS INTERACTIVITY (CONCEPT 2)
    ========================================================================== */
-function handleTextSelection() {
-  const selection = window.getSelection();
-  const text = selection.toString().trim();
-
-  if (!text || text.length < 5 || !el.manuscriptContent.contains(selection.anchorNode)) {
-    el.redPenToolbar.style.display = 'none';
-    return;
-  }
-
-  state.selectedText = text;
-  state.selectedRange = selection.getRangeAt(0).cloneRange();
-
-  // Position the floating toolbar
-  el.redPenToolbar.style.display = 'flex';
-}
-
-async function applyStrikethroughMarkup() {
-  if (!state.selectedRange || !state.selectedText) return;
-
-  const tag = el.toolTagSelect.value || 'CONCEPTUAL_FALLACY';
-  const correction = prompt('Provide your correction for this error:', '');
-
-  if (!correction) {
-    showToast('Annotation cancelled.', 'info');
-    return;
-  }
-
-  // Check if we're in paragraph-based workflow
-  if (state.watsonDocument && state.currentPhase === 'PHASE_2_PARAGRAPH_REVIEW') {
-    const doc = state.watsonDocument;
-    const paragraph = doc.paragraphs[state.currentParagraphIndex];
-
-    // Save correction
-    paragraph.corrections.push({
-      selectedText: state.selectedText,
-      tag: tag,
-      userCorrection: correction,
-      timestamp: new Date().toISOString()
-    });
-
-    // Update paragraph using LLM
-    showToast('Updating paragraph based on your correction...', 'info');
-
-    try {
-      const updated = await updateParagraphFromCorrection({
-        paragraph: paragraph,
-        selectedText: state.selectedText,
-        tag: tag,
-        userCorrection: correction
-      });
-
-      // Update paragraph content
-      paragraph.content = updated.updatedContent;
-      paragraph.confidence = updated.confidence;
-      paragraph.isCorrected = true;
-
-      // Rerender paragraph
-      renderCurrentParagraph();
-
-      // Watson responds
-      addChatMessage('watson', `I've updated my understanding: ${updated.learningApplied}`);
-      showToast('Paragraph updated successfully!', 'success');
-
-      // Auto git push
-      autoGitPush(`Paragraph ${state.currentParagraphIndex + 1} corrected: ${tag}`);
-    } catch (err) {
-      console.error('Paragraph update failed:', err);
-      showToast('Failed to update paragraph. Please try again.', 'error');
-    }
-  } else {
-    // Old workflow: apply strikethrough markup
-    const span = document.createElement('span');
-    span.className = 'red-strike';
-    span.dataset.tag = tag;
-    span.textContent = state.selectedText;
-
-    // Add click handler to view or edit
-    span.onclick = () => showToast(`Tagged as [${tag}]`, 'success');
-
-    state.selectedRange.deleteContents();
-    state.selectedRange.insertNode(span);
-
-    // Add margin note
-    addMarginSticky(state.selectedText, tag, correction);
-
-    // Save annotation state
-    state.annotations.push({
-      text: state.selectedText,
-      tag: tag,
-      note: correction
-    });
-
-    showToast('✒️ Strikethrough applied with Red Ink!', 'success');
-  }
-
-  // Hide toolbar & clear selection
-  el.redPenToolbar.style.display = 'none';
-  window.getSelection().removeAllRanges();
-}
-
 function addMarginSticky(targetText, tag, note) {
   const sticky = document.createElement('div');
   sticky.className = 'margin-sticky';
@@ -668,6 +591,26 @@ function submitRedPenCritique() {
     return;
   }
 
+  const draftSentences = Array.isArray(state.currentCase?.watson_draft)
+    ? state.currentCase.watson_draft
+    : (state.currentCase?.watsonInitialDraft || '').split('\n\n').map((text, index) => ({ id: `legacy_${index + 1}`, text, label: 'VALID' }));
+
+  const metricSummary = computeDiagnosticMetrics({
+    sentences: draftSentences,
+    annotations: state.annotations
+  });
+
+  const payload = buildAnnotationPayload({
+    caseId: state.currentCase?.case_id || state.currentCase?.id || 'uploaded_case',
+    annotations: state.annotations,
+    overallAssessment: `Watson struggled with the flagged misconception set. Recall: ${metricSummary.recall.toFixed(2)} with ${metricSummary.false_alarms} false alarms.`
+  });
+
+  state.eventLog.push({
+    type: 'AUDIT_SUBMITTED',
+    payload
+  });
+
   // Update State Machine
   state.currentPhase = 'PHASE_3_REMEDIATION';
   el.currentPhaseTag.textContent = 'PHASE 3: PEDAGOGICAL INTERVENTION';
@@ -683,7 +626,7 @@ function submitRedPenCritique() {
   }, 600);
 
   // Log Moriarty telemetry
-  logTelemetry('RED_PEN_AUDIT_SUBMITTED', `Teacher annotated 1 critical misconception (${state.annotations[0].tag}).`);
+  logTelemetry('RED_PEN_AUDIT_SUBMITTED', `Teacher annotated ${state.annotations.length} issue(s); recall ${metricSummary.recall.toFixed(2)} with ${metricSummary.false_alarms} false alarms.`);
 
   // Auto-push changes to git
   autoGitPush(`Red pen critique submitted - ${state.annotations.length} annotation(s)`);
@@ -822,6 +765,43 @@ async function handleUserSocraticMessage() {
   // Watson thinking state
   el.watsonStatusText.textContent = 'Typing response...';
 
+  if (state.watsonDocument) {
+    const document = state.watsonDocument;
+    const currentIndex = state.currentParagraphIndex;
+    el.watsonStatusText.textContent = 'Updating document...';
+
+    const update = await applyTeachingToDocument({
+      document,
+      teaching: text,
+      currentParagraphIndex: currentIndex
+    });
+
+    document.paragraphs = update.paragraphs;
+    if (update.teachingApplied) {
+      document.teachingNotes = [...(document.teachingNotes || []), text];
+    }
+    document.overallAccuracy = document.paragraphs.reduce((total, paragraph) => total + (paragraph.confidence || 0), 0) / document.paragraphs.length;
+    update.flaggedErrors.forEach((error, index) => {
+      const sentenceId = `${error.paragraphId}_chat_${Date.now()}_${index}`;
+      state.annotations.push({
+        sentence_id: sentenceId,
+        tag: 'CHAT_IDENTIFIED_ERROR',
+        note: error.explanation || text,
+        text: error.text,
+        severity: 'HIGH'
+      });
+      recordSessionEvent('CHAT_ERROR_FLAGGED', { sentence_id: sentenceId, message: error.text });
+    });
+    const accuracy = Math.round(document.overallAccuracy * 100);
+    el.watsonMasteryBar.style.width = `${accuracy}%`;
+    el.watsonMasteryVal.textContent = `${accuracy}%`;
+    renderCurrentParagraph();
+    addChatMessage('watson', update.response);
+    el.watsonStatusText.textContent = 'Active Dialogue';
+    recordSessionEvent('TEACHING_MESSAGE_APPLIED', { message: text });
+    return;
+  }
+
   // Context based on workflow
   let context = '';
   let currentUnderstanding = '';
@@ -879,62 +859,111 @@ The user is your mentor. Respond in 1-2 concise sentences showing your current u
 /* ==========================================================================
    MORIARTY'S SHADOW DOSSIER (PHASE 5)
    ========================================================================== */
-function openMoriartyDossier() {
-  const debrief = state.currentCase.moriartyDebrief;
+async function openMoriartyDossier() {
+  const debrief = state.currentCase?.moriartyDebrief || {
+    verdict: 'No case data available.',
+    acuityScore: 0,
+    bloomLevel: 0,
+    unobservedClues: 'No unobserved clues.'
+  };
+
+  let evaluation = null;
+  if (state.watsonDocument) {
+    evaluation = await evaluateWatsonDocument({
+      watsonDocument: state.watsonDocument,
+      sourceMaterial: state.watsonDocument.sourceMaterial || state.currentCase?.sourceMaterial || state.currentCase?.watsonInitialDraft || '',
+      inlineData: state.watsonDocument.sourceInlineData
+    });
+  }
+
+  const userErrors = summarizeUserErrors({
+    annotations: state.annotations,
+    flawedSentences: state.currentCase?.seededMisconceptions || [],
+    evaluation: evaluation?.userTeachingEvaluation ? evaluation : null
+  });
+  const missedErrors = evaluation?.userTeachingEvaluation?.missedErrors;
+  const missedErrorsAvailable = Array.isArray(missedErrors) && evaluation?.userTeachingEvaluation?.analysisAvailable !== false;
+  const teachingEvaluation = evaluation?.userTeachingEvaluation || {};
+  const correctionsMade = Number.isFinite(teachingEvaluation.correctionsMade) ? teachingEvaluation.correctionsMade : null;
+  const accurateCorrections = Number.isFinite(teachingEvaluation.accurateCorrections) ? teachingEvaluation.accurateCorrections : null;
+  const falsePositives = Number.isFinite(teachingEvaluation.falsePositives) ? teachingEvaluation.falsePositives : null;
+  const finalAccuracy = Number.isFinite(evaluation?.watsonFinalDocument?.overallAccuracy)
+    ? `${Math.round(evaluation.watsonFinalDocument.overallAccuracy * 100)}%`
+    : 'Not assessed';
+  const paragraphLabel = (paragraphId) => {
+    const match = /^p(\d+)$/.exec(paragraphId || '');
+    return match ? `Paragraph ${match[1]}: ` : '';
+  };
 
   el.moriartyDossierContent.innerHTML = `
     <div style="background: rgba(214, 158, 46, 0.08); border: 1px solid var(--border-gold); border-radius: var(--radius-md); padding: 18px;">
       <span style="font-size: 11px; font-weight: 800; color: var(--accent-gold); letter-spacing: 1px;">
-        CLINICAL ASSESSMENT OF SHERLOCK HOLMES
+        MORIARTY REVIEW
       </span>
-      <p style="font-style: italic; color: #f0ede6; font-size: 13px; line-height: 1.6; margin-top: 8px;">
-        "${debrief.verdict}"
+      <p style="color: #f0ede6; font-size: 13px; line-height: 1.6; margin-top: 8px; margin-bottom: 0;">
+        ${evaluation?.overallVerdict || debrief.verdict}
       </p>
-      <span style="display: block; text-align: right; font-size: 11px; color: var(--text-gold); font-weight: 700; margin-top: 8px;">
-        — Prof. James Moriarty
-      </span>
     </div>
 
-    <!-- Metrics Radar / Scores -->
     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
       <div style="background: var(--bg-surface-elevated); border: 1px solid var(--border-subtle); padding: 14px; border-radius: var(--radius-md);">
-        <span style="font-size: 11px; color: var(--text-muted); font-weight: 600;">DIAGNOSTIC ACUITY</span>
-        <div style="font-size: 24px; font-weight: 900; color: var(--accent-emerald); font-family: var(--font-mono); margin-top: 4px;">
-          ${debrief.acuityScore}%
-        </div>
-        <p style="font-size: 10px; color: var(--text-secondary); margin-top: 2px;">
-          Spotted 100% of seeded cognitive traps without false alarms.
-        </p>
+        <span style="font-size: 11px; color: var(--text-muted); font-weight: 600;">WATSON'S FINAL ACCURACY</span>
+        <div style="font-size: 24px; font-weight: 900; color: var(--accent-emerald); font-family: var(--font-mono); margin-top: 4px;">${finalAccuracy}</div>
+        <p style="font-size: 10px; color: var(--text-secondary); margin-top: 2px;">Compared with the uploaded study material.</p>
       </div>
-
       <div style="background: var(--bg-surface-elevated); border: 1px solid var(--border-subtle); padding: 14px; border-radius: var(--radius-md);">
-        <span style="font-size: 11px; color: var(--text-muted); font-weight: 600;">BLOOM'S RIGOR</span>
-        <div style="font-size: 24px; font-weight: 900; color: var(--accent-cyan); font-family: var(--font-mono); margin-top: 4px;">
-          L ${debrief.bloomLevel}
-        </div>
-        <p style="font-size: 10px; color: var(--text-secondary); margin-top: 2px;">
-          Synthesis & Analysis level question authoring.
-        </p>
+        <span style="font-size: 11px; color: var(--text-muted); font-weight: 600;">CORRECTIONS</span>
+        <div style="font-size: 24px; font-weight: 900; color: var(--accent-cyan); font-family: var(--font-mono); margin-top: 4px;">${accurateCorrections ?? '—'} / ${correctionsMade ?? '—'}</div>
+        <p style="font-size: 10px; color: var(--text-secondary); margin-top: 2px;">Source-verified corrections made by the user.</p>
       </div>
     </div>
 
-    <!-- The Unobserved Clues -->
     <div style="background: rgba(229, 62, 62, 0.08); border: 1px solid var(--border-crimson); border-radius: var(--radius-md); padding: 16px;">
       <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
-        <span style="color: var(--text-crimson); font-size: 14px;">🔎</span>
-        <strong style="font-size: 12px; color: var(--text-crimson); font-family: var(--font-serif);">
-          THE UNOBSERVED CLUES (What Holmes Walked Past)
+        <strong style="font-size: 12px; color: var(--text-crimson);">
+          IMPORTANT ERRORS
         </strong>
       </div>
-      <p style="font-size: 12px; color: #ffd8d8; line-height: 1.5;">
-        ${debrief.unobservedClues}
-      </p>
+      <ul style="margin: 0; padding-left: 18px; color: #ffd8d8; font-size: 12px; line-height: 1.7;">
+        ${userErrors.length ? userErrors.map((issue) => `<li>${escapeHtml(issue)}</li>`).join('') : `<li>No clear errors were flagged in this review.</li>`}
+      </ul>
     </div>
 
-    <!-- Audit Event Stream -->
-    <div>
+    <div style="background: rgba(229, 62, 62, 0.05); border: 1px solid var(--border-crimson); border-radius: var(--radius-md); padding: 16px;">
+      <strong style="font-size: 12px; color: var(--text-crimson);">ERRORS YOU MISSED</strong>
+      <ul style="margin: 8px 0 0; padding-left: 18px; color: #ffd8d8; font-size: 12px; line-height: 1.7;">
+        ${missedErrorsAvailable
+          ? (missedErrors.length
+            ? missedErrors.map((issue) => `<li><strong>${escapeHtml(paragraphLabel(issue.paragraphId))}${escapeHtml(issue.claim || 'Uncorrected issue')}</strong> ${escapeHtml(issue.correctUnderstanding || issue.explanation || '')}${issue.whyItMatters ? ` ${escapeHtml(issue.whyItMatters)}` : ''}</li>`).join('')
+            : '<li>No uncorrected errors were identified against the uploaded material.</li>')
+          : '<li>Detailed missed-error analysis is unavailable. Check the AI connection and reopen this report.</li>'}
+      </ul>
+    </div>
+
+    <div style="background: rgba(56, 189, 248, 0.06); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: var(--radius-md); padding: 14px; margin-top: 12px;">
+      <div style="font-size: 11px; font-weight: 800; color: var(--accent-cyan); letter-spacing: 0.5px; margin-bottom: 8px;">
+        WHAT THESE RESULTS MEAN
+      </div>
+      <ul style="margin: 0; padding-left: 18px; color: var(--text-secondary); font-size: 12px; line-height: 1.7;">
+        <li>Errors caught: ${accurateCorrections ?? 'Not assessed'} of ${correctionsMade ?? 'Not assessed'} user corrections were judged accurate.</li>
+        <li>Errors missed: ${missedErrorsAvailable ? missedErrors.length : 'Not assessed'} issues in Watson's original draft were not corrected.</li>
+        <li>False alarms: ${falsePositives ?? 'Not assessed'} corrections were judged inconsistent with the source.</li>
+        <li>Final accuracy: ${finalAccuracy} of Watson's revised document matched the uploaded material.</li>
+      </ul>
+    </div>
+
+    <div style="margin-top: 12px; border-top: 1px solid var(--border-subtle); padding-top: 14px;">
+      <label for="moriartyQuestionInput" style="display: block; font-size: 12px; font-weight: 700; color: var(--text-primary); margin-bottom: 8px;">Clarify this report</label>
+      <div style="display: flex; gap: 8px;">
+        <input id="moriartyQuestionInput" type="text" placeholder="Ask about an error or evaluation..." style="flex: 1; min-width: 0; background: var(--bg-surface-elevated); color: var(--text-primary); border: 1px solid var(--border-subtle); border-radius: 6px; padding: 9px 10px;">
+        <button class="btn btn-primary" id="askMoriartyTutorBtn" type="button">Ask</button>
+      </div>
+      <p id="moriartyTutorResponse" aria-live="polite" style="margin: 10px 0 0; font-size: 12px; color: var(--text-secondary); line-height: 1.6;"></p>
+    </div>
+
+    <div style="margin-top: 12px;">
       <span style="font-size: 11px; font-weight: 700; color: var(--text-muted); letter-spacing: 0.5px;">
-        SHADOW TELEMETRY EVENT STREAM
+        EVENT STREAM
       </span>
       <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 8px;">
         ${state.telemetryLogs.map(log => `
@@ -947,11 +976,40 @@ function openMoriartyDossier() {
     </div>
   `;
 
+  const tutorInput = document.getElementById('moriartyQuestionInput');
+  const tutorButton = document.getElementById('askMoriartyTutorBtn');
+  const tutorResponse = document.getElementById('moriartyTutorResponse');
+  tutorButton.onclick = async () => {
+    const question = tutorInput.value.trim();
+    if (!question) return;
+
+    tutorButton.disabled = true;
+    tutorResponse.textContent = 'Checking the report and source material...';
+    const answer = await askMoriartyTutor({
+      question,
+      watsonDocument: state.watsonDocument || { paragraphs: [] },
+      sourceMaterial: state.watsonDocument?.sourceMaterial || state.currentCase?.sourceMaterial || '',
+      evaluation: evaluation || { overallVerdict: debrief.verdict, userTeachingEvaluation: {} }
+    });
+    tutorResponse.textContent = answer;
+    recordSessionEvent('MORIARTY_REPORT_QUESTION', { message: question });
+    tutorButton.disabled = false;
+  };
+
   el.moriartySlideoverBackdrop.classList.add('open');
 }
 
 function closeMoriartyDossier() {
   el.moriartySlideoverBackdrop.classList.remove('open');
+}
+
+function recordSessionEvent(type, detail = {}) {
+  state.eventLog.push({
+    type,
+    time: new Date().toISOString(),
+    detail
+  });
+  logTelemetry(type, detail.message || JSON.stringify(detail));
 }
 
 function logTelemetry(type, desc) {
@@ -1061,6 +1119,8 @@ async function handleCustomMaterialIngest() {
 
   try {
     const watsonDoc = await generateWatsonDocument({ title, content, inlineData });
+    watsonDoc.sourceMaterial = content || state.attachedFile?.textContent || '';
+    watsonDoc.sourceInlineData = inlineData || null;
     state.watsonDocument = watsonDoc;
     state.currentParagraphIndex = 0;
     renderWatsonDocument(watsonDoc);
@@ -1188,12 +1248,6 @@ function setupEventListeners() {
   // Moriarty Dossier
   el.openMoriartyBtn.onclick = openMoriartyDossier;
   el.closeMoriartyBtn.onclick = closeMoriartyDossier;
-
-  // Text Selection on Parchment
-  el.manuscriptContent.onmouseup = handleTextSelection;
-  el.manuscriptContent.ontouchend = handleTextSelection;
-  el.toolStrikeBtn.onclick = applyStrikethroughMarkup;
-  el.toolCommentBtn.onclick = applyStrikethroughMarkup;
 
   // Socratic Chat
   el.sendSocraticBtn.onclick = handleUserSocraticMessage;
