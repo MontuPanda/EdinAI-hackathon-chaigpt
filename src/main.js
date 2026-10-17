@@ -110,12 +110,9 @@ const el = {
 function init() {
   setupEventListeners();
   updateApiStatusUI();
-  
-  if (state.currentCase) {
-    renderCase(state.currentCase);
-  } else {
-    renderEmptyState();
-  }
+
+  state.currentCase = null;
+  renderEmptyState();
 
   // If user hasn't configured key yet, prompt modal gently
   if (!gemini.hasValidKey()) {
@@ -297,8 +294,12 @@ function renderCase(caseData) {
   el.canvasDocTitle.textContent = `Watson's Working Parchment: ${caseData.title}`;
 
   // Render Watson's Draft
-  const paragraphs = caseData.watsonInitialDraft.split('\n\n');
-  el.manuscriptContent.innerHTML = paragraphs.map(p => `<p>${escapeHtml(p)}</p>`).join('');
+  const draftSentences = Array.isArray(caseData.watson_draft) ? caseData.watson_draft : (caseData.watsonInitialDraft || '').split('\n\n').map((text, index) => ({ id: `legacy_${index + 1}`, text, label: 'VALID' }));
+  el.manuscriptContent.innerHTML = draftSentences.map((sentence) => `
+    <p class="draft-sentence" data-sentence-id="${sentence.id}" style="margin-bottom: 10px; line-height: 1.8;">
+      ${escapeHtml(sentence.text)}
+    </p>
+  `).join('');
 
   // Clear margin notes
   el.marginNotesColumn.innerHTML = '';
@@ -631,21 +632,25 @@ function addMarginSticky(targetText, tag, note) {
 
 function triggerAutoDemoHighlight() {
   const preset = state.currentCase;
-  if (!preset.suggestedAnnotations?.length) return;
+  if (!preset?.suggestedAnnotations?.length) return;
 
   const anno = preset.suggestedAnnotations[0];
   const content = el.manuscriptContent.innerHTML;
+  const draftText = Array.isArray(preset.watson_draft)
+    ? preset.watson_draft.find((sentence) => sentence.id === anno.sentence_id || sentence.text === anno.targetPhrase)?.text || anno.targetPhrase
+    : anno.targetPhrase;
 
-  if (content.includes(anno.targetPhrase)) {
+  if (content.includes(escapeHtml(draftText))) {
     const marked = content.replace(
-      anno.targetPhrase,
-      `<span class="red-strike" data-tag="${anno.tag}">${escapeHtml(anno.targetPhrase)}</span>`
+      escapeHtml(draftText),
+      `<span class="red-strike" data-tag="${anno.tag}" data-sentence-id="${anno.sentence_id || 'demo'}">${escapeHtml(draftText)}</span>`
     );
     el.manuscriptContent.innerHTML = marked;
-    addMarginSticky(anno.targetPhrase, anno.tag, anno.correction);
+    addMarginSticky(draftText, anno.tag, anno.correction);
 
     state.annotations.push({
-      text: anno.targetPhrase,
+      text: draftText,
+      sentence_id: anno.sentence_id || 'demo',
       tag: anno.tag,
       note: anno.correction
     });
@@ -817,17 +822,34 @@ async function handleUserSocraticMessage() {
   // Watson thinking state
   el.watsonStatusText.textContent = 'Typing response...';
 
-  // If Gemini API is configured, generate live response in the domain style!
+  // Context based on workflow
+  let context = '';
+  let currentUnderstanding = '';
+
+  if (state.watsonDocument) {
+    // Paragraph-based workflow
+    const doc = state.watsonDocument;
+    const currentPara = doc.paragraphs[state.currentParagraphIndex];
+    context = `Topic: ${doc.title}\n\nCurrent paragraph topic: ${currentPara?.topic || 'General'}\n\nMy current understanding: ${currentPara?.content || 'Still learning'}`;
+    currentUnderstanding = doc.selfAssessment || 'I am still learning this topic from your guidance.';
+  } else if (state.currentCase) {
+    // Old workflow
+    context = `Topic: ${state.currentCase.title}`;
+    currentUnderstanding = state.currentCase.activeBelief || 'I am learning from your notes.';
+  }
+
+  // If Gemini API is configured, generate live response
   if (gemini.hasValidKey() && !gemini.isMockMode) {
     try {
-      const systemInstruction = `You are Dr. John Watson, acting as an earnest, intelligent student/tutee studying "${state.currentCase.title}".
+      const systemInstruction = `You are Dr. John Watson, a bright student with general knowledge but no domain-specific expertise about this topic yet.
+You are learning from your mentor (Sherlock Holmes) who is teaching you.
 Your tone should be that of a smart university student/researcher: respectful, engaged, and modern.
 DO NOT use archaic Victorian language (no "By Jove", "Good heavens", or 19th-century slang). Use the clean, technical language of the topic.
-The user (Sherlock Holmes) is your mentor teaching you. Respond in 1-2 concise sentences reflecting on their point.`;
+The user is your mentor. Respond in 1-2 concise sentences showing your current understanding or asking for clarification.`;
 
       const response = await gemini.generateContent({
         systemInstruction,
-        prompt: `The mentor says: "${text}". Your current active belief is: "${state.currentCase.activeBelief}". How do you respond?`,
+        prompt: `Context: ${context}\n\nMy current understanding: ${currentUnderstanding}\n\nMy mentor says: "${text}". How do I respond?`,
         temperature: 0.6
       });
 
@@ -841,9 +863,15 @@ The user (Sherlock Holmes) is your mentor teaching you. Respond in 1-2 concise s
     }
   }
 
-  // Realistic modern fallback
+  // Contextual fallback
   setTimeout(() => {
-    addChatMessage('watson', `That makes sense, but how does that apply when you calculate the net forces acting on the system?`);
+    if (state.watsonDocument) {
+      const doc = state.watsonDocument;
+      const currentPara = doc.paragraphs[state.currentParagraphIndex];
+      addChatMessage('watson', `I see. That helps clarify my understanding of ${currentPara?.topic || 'this topic'}. Can you tell me more about how this works?`);
+    } else {
+      addChatMessage('watson', `That makes sense. I'm still learning this concept from your guidance. Could you explain how this applies to what we're studying?`);
+    }
     el.watsonStatusText.textContent = 'Active Dialogue';
   }, 500);
 }
